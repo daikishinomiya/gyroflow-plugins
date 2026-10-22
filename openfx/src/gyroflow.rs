@@ -112,6 +112,8 @@ struct InstanceData {
     supports_output_size: bool,
     is_fusion_page: bool,
     file_path: Option<String>,
+    /// Whether `log_clip_range` has already reported for this instance
+    logged_clip_range: bool,
 
     current_file_info_pending: Arc<AtomicBool>,
     current_file_info: Arc<Mutex<Option<CurrentFileInfo>>>,
@@ -136,6 +138,34 @@ impl InstanceData {
             log::error!("plugin.stab_manager error: {e:?}");
             Error::UnknownError
         })
+    }
+    /// Reports, once per instance, everything the host says about where the clip sits in its source
+    /// video. The plugin doesn't trim the stabilization to the clip yet (gyroflow-core's `trim_ranges`),
+    /// and which of these the host actually fills in decides how that can be worked out. Resolve answers
+    /// differently on each page, so this has to be read off a running host rather than from the spec
+    fn log_clip_range(&mut self, effect: &ImageEffectHandle, time: Time, src_frame: Option<Int>, stab: &StabilizationManager) {
+        if self.logged_clip_range { return; }
+        self.logged_clip_range = true;
+
+        let page = effect.properties().ok().and_then(|x: EffectInstance| x.get_resolve_page().ok());
+        let duration = effect.properties().ok().and_then(|x: EffectInstance| x.get_effect_duration().ok());
+        let (video_duration_ms, frame_count, video_fps) = {
+            let p = stab.params.read();
+            (p.duration_ms, p.frame_count, p.fps)
+        };
+        log::info!(
+            "clip range probe: page {page:?}, is_fusion_page {}, effect duration {duration:?}\n  \
+             clip: frame_range {:?}, unmapped_frame_range {:?}, frame_rate {:?}, unmapped_frame_rate {:?}, continuous {:?}\n  \
+             render: time {time}, src_frame {src_frame:?}\n  \
+             video: duration_ms {video_duration_ms}, frame_count {frame_count}, fps {video_fps}, trim_ranges {:?}",
+            self.is_fusion_page,
+            self.source_clip.get_frame_range(),
+            self.source_clip.get_unmapped_frame_range(),
+            self.source_clip.get_frame_rate(),
+            self.source_clip.get_unmapped_frame_rate(),
+            self.source_clip.get_continuous_samples(),
+            stab.trim_ranges(),
+        );
     }
     pub fn check_pending_file_info(&mut self) -> Result<bool> { // -> is_video_file
         if self.current_file_info_pending.load(SeqCst) {
@@ -228,6 +258,8 @@ impl Execute for GyroflowPlugin {
                 // The host may tell which source frame it renders (Resolve does, retimed and conformed clips included): the
                 // timestamps are exact then, whatever the frame rates
                 let src_frame = in_args.get_src_frame().ok();
+
+                instance_data.log_clip_range(effect, time, src_frame, &stab);
 
                 if !has_gyro {
                     instance_data.plugin.set_status(&mut instance_data.params, "No gyro data in this file", "This file has no motion data (a transcode or an export of the original, or a camera without gyro). Use the original camera file, or open it in Gyroflow to load the motion data from another file.", false);
@@ -446,6 +478,7 @@ impl Execute for GyroflowPlugin {
                     supports_output_size: true,
                     is_fusion_page: false,
                     file_path: None,
+                    logged_clip_range: false,
                     params: ParamHandler {
                         instance_id:              param_set.parameter("InstanceId")?,
                         project_data:             param_set.parameter("ProjectData")?,
