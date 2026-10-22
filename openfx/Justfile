@@ -1,11 +1,123 @@
 set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 
 TargetDir := env_var_or_default("CARGO_TARGET_DIR", "target")
+DevDir := TargetDir / "ofx-dev"
 
 [windows]
 release:
     cargo build --release
     Copy-Item -Path "{{TargetDir}}\release\gyroflow_ofx.dll" -Destination "C:\Program Files\Common Files\OFX\Plugins\Gyroflow.ofx.bundle\Contents\Win64\Gyroflow.ofx" -Force
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Development ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+# Build a bundle in target/ofx-dev, leaving the installed plugin alone. Hosts search
+# OFX_PLUGIN_PATH before the system plugin directory, so point it at that bundle to run the
+# dev build instead. The recipe prints the command to start Resolve with.
+[windows]
+dev:
+    #!powershell
+    $ErrorActionPreference = 'Stop'
+
+    cargo build --release
+
+    $devDir = (New-Item -ItemType Directory -Path "{{DevDir}}" -Force).FullName
+    $contents = "$devDir\Gyroflow.ofx.bundle\Contents"
+    New-Item -ItemType Directory -Path "$contents\Win64" -Force | Out-Null
+    Copy-Item "{{TargetDir}}\release\gyroflow_ofx.dll" "$contents\Win64\Gyroflow.ofx" -Force
+    Copy-Item "{{justfile_directory()}}\res\Info.plist" "$contents\" -Force
+
+    Write-Host ''
+    Write-Host 'Start Resolve with this bundle:'
+    Write-Host ('  $env:OFX_PLUGIN_PATH = "' + $devDir + '"; & "C:\Program Files\Blackmagic Design\DaVinci Resolve\Resolve.exe"')
+
+[macos]
+dev:
+    #!/bin/bash
+    set -e
+
+    cargo build --release
+
+    mkdir -p "{{DevDir}}"
+    dev_dir="$(cd "{{DevDir}}" && pwd)"
+    contents="$dev_dir/Gyroflow.ofx.bundle/Contents"
+    mkdir -p "$contents/MacOS"
+    cp "{{TargetDir}}/release/libgyroflow_ofx.dylib" "$contents/MacOS/Gyroflow.ofx"
+    cp "{{justfile_directory()}}/res/Info.plist" "$contents/"
+
+    echo
+    echo "Start Resolve with this bundle:"
+    # Launched directly rather than through `open`, which doesn't pass the environment on
+    echo "  OFX_PLUGIN_PATH=\"$dev_dir\" '/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/MacOS/Resolve'"
+
+[linux]
+dev:
+    #!/bin/bash
+    set -e
+
+    cargo build --release
+
+    mkdir -p "{{DevDir}}"
+    dev_dir="$(cd "{{DevDir}}" && pwd)"
+    contents="$dev_dir/Gyroflow.ofx.bundle/Contents"
+    mkdir -p "$contents/Linux-x86-64"
+    cp "{{TargetDir}}/release/libgyroflow_ofx.so" "$contents/Linux-x86-64/Gyroflow.ofx"
+    cp "{{justfile_directory()}}/res/Info.plist" "$contents/"
+
+    echo
+    echo "Start Resolve with this bundle:"
+    echo "  OFX_PLUGIN_PATH=\"$dev_dir\" /opt/resolve/bin/resolve"
+
+# Overwrite the installed plugin with a local build
+[windows]
+install:
+    #!powershell
+    $ErrorActionPreference = 'Stop'
+
+    cargo build --release
+
+    $contents = "C:\Program Files\Common Files\OFX\Plugins\Gyroflow.ofx.bundle\Contents"
+    New-Item -ItemType Directory -Path "$contents\Win64" -Force | Out-Null
+    Copy-Item "{{justfile_directory()}}\res\Info.plist" "$contents\" -Force
+    Copy-Item "{{TargetDir}}\release\gyroflow_ofx.dll" "$contents\Win64\Gyroflow.ofx" -Force
+
+[macos]
+install:
+    #!/bin/bash
+    set -e
+
+    cargo build --release
+
+    contents="/Library/OFX/Plugins/Gyroflow.ofx.bundle/Contents"
+    sudo mkdir -p "$contents/MacOS"
+    sudo cp "{{justfile_directory()}}/res/Info.plist" "$contents/"
+    sudo cp "{{TargetDir}}/release/libgyroflow_ofx.dylib" "$contents/MacOS/Gyroflow.ofx"
+
+[linux]
+install:
+    #!/bin/bash
+    set -e
+
+    cargo build --release
+
+    contents="/usr/OFX/Plugins/Gyroflow.ofx.bundle/Contents"
+    sudo mkdir -p "$contents/Linux-x86-64"
+    sudo cp "{{justfile_directory()}}/res/Info.plist" "$contents/"
+    sudo cp "{{TargetDir}}/release/libgyroflow_ofx.so" "$contents/Linux-x86-64/Gyroflow.ofx"
+
+# Follow the plugin log. It's truncated each time the host loads the plugin
+[windows]
+log:
+    Get-Content -Wait -Tail 200 "$env:APPDATA\Gyroflow\gyroflow-openfx.log"
+
+[macos]
+log:
+    tail -n 200 -F "$HOME/Library/Application Support/Gyroflow/gyroflow-openfx.log"
+
+[linux]
+log:
+    tail -n 200 -F "$HOME/.local/share/Gyroflow/gyroflow-openfx.log"
 
 [windows]
 deploy:
