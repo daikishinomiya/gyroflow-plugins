@@ -1106,8 +1106,15 @@ impl CrossThreadInstance {
                         let duration_ms = stab.params.read().duration_ms;
                         let ms = |ranges: &[(f64, f64)]| ranges.iter().map(|x| ((x.0 * duration_ms).round() as i64, (x.1 * duration_ms).round() as i64)).collect::<Vec<_>>();
                         let old_ranges = Some(stab.trim_ranges()).filter(|x| !x.is_empty()).unwrap_or(vec![(0.0, 1.0)]);
-                        let new_range = clip.trim.unwrap_or((0.0f64, duration_ms / 1000.0));
-                        let new_ranges = vec![((new_range.0 * 1000.0) / duration_ms, (new_range.1 * 1000.0) / duration_ms)];
+                        // A range set in the plugin says outright what of the video to stabilize, and the layer's trim only
+                        // says what of it the composition shows
+                        let new_ranges = match GyroflowPluginBaseInstance::stabilization_range(&params) {
+                            Some(range) => vec![range],
+                            None => {
+                                let new_range = clip.trim.unwrap_or((0.0f64, duration_ms / 1000.0));
+                                vec![((new_range.0 * 1000.0) / duration_ms, (new_range.1 * 1000.0) / duration_ms)]
+                            }
+                        };
                         if ms(&old_ranges) != ms(&new_ranges) {
                             log::info!("Trim range changed: {:?} != {:?}", ms(&old_ranges), ms(&new_ranges));
                             // The pieces of a cut clip are trimmed each their own way, and smoothed for it: a stabilization shared

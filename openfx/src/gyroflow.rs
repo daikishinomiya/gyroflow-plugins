@@ -66,6 +66,8 @@ define_params!(ParamHandler {
         VideoSpeed            => video_speed:              ParamHandle<Double>,
         OutputWidth           => output_width:             ParamHandle<Double>,
         OutputHeight          => output_height:            ParamHandle<Double>,
+        StabilizationRangeStart=> stab_range_start:        ParamHandle<Double>,
+        StabilizationRangeEnd => stab_range_end:           ParamHandle<Double>,
         //FusionStartFrame      => fusion_start_frame:       ParamHandle<Double>,
     ],
     i32s: [
@@ -475,6 +477,8 @@ impl Execute for GyroflowPlugin {
                         rotation:                 param_set.parameter("Rotation")?,
                         output_width:             param_set.parameter("OutputWidth")?,
                         output_height:            param_set.parameter("OutputHeight")?,
+                        stab_range_start:         param_set.parameter("StabilizationRangeStart")?,
+                        stab_range_end:           param_set.parameter("StabilizationRangeEnd")?,
                         output_swap:              param_set.parameter("OutputSizeSwap")?,
                         output_size_fit:          param_set.parameter("OutputSizeToTimeline")?,
                         interpolation:            param_set.parameter("Interpolation")?,
