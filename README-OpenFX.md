@@ -49,6 +49,59 @@ If your video file is from GoPro 8+, DJI or Insta360, you can also select video 
 ## For more detailed instructions, see the [docs](https://docs.gyroflow.xyz/app/video-editor-plugins/general-plugin-workflow)
 
 
+# Development
+
+The crates use the 2024 edition, so a Rust toolchain of 1.85 or newer is required. `just install-deps`
+(from the repository root) fetches the remaining build dependencies. `gyroflow-core`'s build script
+downloads the bundled lens profile database on the first build, so that build needs network access.
+
+## Running a local build
+
+`just ofx dev` builds the plugin and assembles an OFX bundle under `target/ofx-dev` instead of
+overwriting the installed one. OpenFX hosts search the `OFX_PLUGIN_PATH` directories before the
+system plugin directory, so starting Resolve with that variable set runs the dev build while the
+released plugin stays installed and unchanged. The recipe prints the command to use.
+
+Resolve only loads plugins at startup, so each build needs a restart. On macOS, launch the
+executable inside the application bundle rather than using `open`, which doesn't pass the
+environment on. On macOS you also have to enable the bundle under Preferences -> Video plugins
+the first time.
+
+`just ofx install` overwrites the installed plugin instead, for testing the normal installation.
+
+## Logs
+
+The plugin logs to `gyroflow-openfx.log` in the Gyroflow data directory, truncating it each time the
+host loads the plugin:
+
+| OS | Path |
+| --- | --- |
+| Windows | `%APPDATA%\Gyroflow\gyroflow-openfx.log` |
+| macOS | `~/Library/Application Support/Gyroflow/gyroflow-openfx.log` |
+| Linux | `~/.local/share/Gyroflow/gyroflow-openfx.log` |
+
+`just ofx log` follows it. Panics are logged there too. If the data directory can't be written, the
+log goes to the temporary directory instead.
+
+The log records which page the effect was created on, the GPU backend chosen for each render, and
+the buffer sizes, which is usually what you need to tell the Edit/Color and Fusion paths apart.
+
+## What to cover when testing
+
+The host-independent logic is covered by `cargo test` in `common/`. Everything else depends on how
+the host behaves, and Resolve behaves differently in ways worth exercising deliberately:
+
+- **Each page.** Edit and Color hand the plugin a timeline-sized buffer with the clip letterboxed
+  inside it and own the output size; Fusion hands it a clip-sized buffer and offsets frame numbers
+  by the clip's frame range. These are separate code paths, selected at `CreateInstance`.
+- **Each GPU backend.** Preferences -> Memory and GPU -> GPU processing mode forces OpenCL, CUDA or
+  Metal rather than Auto. The plugin takes a different buffer path for each.
+- **Clips that aren't plain and untrimmed:** trimmed clips, clips with a non-zero start timecode,
+  retimed and speed-ramped clips, compound clips, vertical clips, and anamorphic clips.
+- **Project round-tripping:** save, close and reopen the Resolve project, and copy or paste the
+  effect between clips, including clips cut from the same source file.
+
+
 # License
 
 This software is licensed under GNU General Public License version 3 ([LICENSE](LICENSE))
