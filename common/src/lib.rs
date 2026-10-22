@@ -512,6 +512,59 @@ impl Footage {
     }
 }
 
+/// How a host's frame numbers map to timestamps in the video Gyroflow stabilizes.
+///
+/// Hosts count the frames of a clip as it sits on the timeline, which isn't how the motion data is
+/// indexed. The clip can start part way into the video (`time_adj`, the clip's first frame on Resolve's
+/// Fusion page), be conformed to a timeline of another frame rate (`src_fps` against `fps`), or be
+/// retimed (`speed_stretch`). A host that says which source frame it renders settles all of it at once
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClipTiming {
+    /// The video's frame rate, as Gyroflow read it from the file
+    pub fps: f64,
+    /// The frame rate the host counts the frames it asks for at
+    pub src_fps: f64,
+    /// The host's number for the clip's first frame
+    pub time_adj: f64,
+    /// How much longer the clip is on the timeline than the video is, see `speed_stretch`
+    pub speed_stretch: f64,
+}
+impl ClipTiming {
+    /// The retime factor of a clip `timeline_frames` long on a timeline of `src_fps`, of a video
+    /// `duration_ms` long. Factors within three percent of 1 are the host and the app rounding the
+    /// duration differently rather than a retime. The rest the plugin can't tell apart from a clip that's
+    /// only trimmed, which is what the Fusion page is for: the host gives the clip's own frames there
+    pub fn speed_stretch(duration_ms: f64, timeline_frames: f64, src_fps: f64) -> f64 {
+        if timeline_frames <= 0.0 || src_fps <= 0.0 { return 1.0; }
+        let duration_at_src_fps = ((timeline_frames / src_fps) * 1000.0).round();
+        if duration_at_src_fps == 0.0 { return 1.0; }
+        // Whole percents, the durations are only as exact as the host's frame count
+        let percent = ((duration_ms.round() / duration_at_src_fps) * 100.0).floor();
+        if (97.0..=103.0).contains(&percent) { 1.0 } else { percent / 100.0 }
+    }
+
+    /// The timestamp in the video of the host's frame `time`. `src_frame` is the source frame the host
+    /// says it renders (Resolve 20 does, retimed and conformed clips included), which is exact
+    pub fn timestamp_us(&self, time: f64, src_frame: Option<i32>) -> i64 {
+        if let Some(frame) = src_frame {
+            return (frame as f64 * (1_000_000.0 / self.fps)).round() as i64;
+        }
+        let time = time - self.time_adj;
+        if (self.src_fps - self.fps).abs() > 0.01 {
+            // Conformed: the host's frames are of its own rate, and the video's frame they land in is the one to stabilize
+            let frame = (time / self.src_fps) * self.fps * self.speed_stretch;
+            (frame.floor() * (1_000_000.0 / self.fps)).round() as i64
+        } else {
+            ((time / self.src_fps * 1_000_000.0) * self.speed_stretch).round() as i64
+        }
+    }
+
+    /// The host's frame that `timestamp_us` of the video is rendered at, the inverse of `timestamp_us`
+    pub fn frame_at(&self, timestamp_us: i64) -> f64 {
+        (timestamp_us as f64 / self.speed_stretch / 1_000_000.0 * self.src_fps).round() + self.time_adj
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TimeType {
     Frame(f64),
@@ -1983,6 +2036,88 @@ mod tests {
         inst.detach(&mut params, &cache).unwrap();
         assert!(inst.ever_changed && inst.managers.is_empty() && cache.lock().is_empty());
         assert_ne!(id(&params), before);
+    }
+
+    /// A clip on a timeline of its own frame rate, untrimmed and not retimed
+    fn plain(fps: f64) -> ClipTiming {
+        ClipTiming { fps, src_fps: fps, time_adj: 0.0, speed_stretch: 1.0 }
+    }
+
+    #[test]
+    fn frames_of_a_plain_clip_are_their_own_timestamps() {
+        let timing = plain(30.0);
+        assert_eq!(timing.timestamp_us(0.0, None), 0);
+        assert_eq!(timing.timestamp_us(1.0, None), 33_333);
+        assert_eq!(timing.timestamp_us(300.0, None), 10_000_000);
+    }
+
+    #[test]
+    fn the_source_frame_the_host_gives_settles_the_timestamp() {
+        // Whatever the rest says, including a clip conformed and retimed at once
+        let timing = ClipTiming { fps: 30.0, src_fps: 25.0, time_adj: 120.0, speed_stretch: 2.0 };
+        assert_eq!(timing.timestamp_us(999.0, Some(90)), 3_000_000);
+        assert_eq!(timing.timestamp_us(999.0, Some(0)), 0);
+    }
+
+    #[test]
+    fn the_fusion_page_offsets_frames_by_the_clips_start() {
+        // The host numbers the clip's frames from its place on the timeline
+        let timing = ClipTiming { time_adj: 1000.0, ..plain(30.0) };
+        assert_eq!(timing.timestamp_us(1000.0, None), 0);
+        assert_eq!(timing.timestamp_us(1030.0, None), 1_000_000);
+    }
+
+    #[test]
+    fn a_conformed_clip_lands_on_the_video_frame_the_timeline_frame_falls_in() {
+        // A 30 fps clip on a 25 fps timeline: timeline frame 10 is 0.4s in, the video's frame 12
+        let timing = ClipTiming { fps: 30.0, src_fps: 25.0, ..plain(30.0) };
+        assert_eq!(timing.timestamp_us(10.0, None), 400_000);
+        // Timeline frame 11 is 0.44s in, still inside the video's frame 13 (0.4333s)
+        assert_eq!(timing.timestamp_us(11.0, None), 433_333);
+    }
+
+    #[test]
+    fn durations_that_disagree_by_a_few_percent_are_not_a_retime() {
+        // The host counts whole frames and the app reads the video's duration, so they differ a little
+        for frames in [298.0, 300.0, 302.0] {
+            assert_eq!(ClipTiming::speed_stretch(10_000.0, frames, 30.0), 1.0);
+        }
+        // A real retime is kept: the clip plays over half as many frames as the video has
+        assert_eq!(ClipTiming::speed_stretch(10_000.0, 150.0, 30.0), 2.0);
+    }
+
+    #[test]
+    fn a_clip_with_nothing_to_measure_is_not_retimed() {
+        assert_eq!(ClipTiming::speed_stretch(10_000.0, 0.0, 30.0), 1.0);
+        assert_eq!(ClipTiming::speed_stretch(10_000.0, -1.0, 30.0), 1.0);
+        assert_eq!(ClipTiming::speed_stretch(10_000.0, 300.0, 0.0), 1.0);
+        // A clip too short to round to a millisecond, rather than a division by zero
+        assert_eq!(ClipTiming::speed_stretch(10_000.0, 0.01, 30.0), 1.0);
+    }
+
+    #[test]
+    fn a_ramped_timestamp_maps_back_to_the_frame_that_renders_it() {
+        for timing in [plain(30.0), ClipTiming { time_adj: 1000.0, ..plain(30.0) }, ClipTiming { speed_stretch: 2.0, ..plain(30.0) }] {
+            for frame in [0.0, 1.0, 97.0] {
+                let frame = frame + timing.time_adj;
+                let ts = timing.timestamp_us(frame, None);
+                assert_eq!(timing.frame_at(ts), frame, "{timing:?} at {frame}");
+            }
+        }
+    }
+
+    /// A trimmed clip on the Edit or Color page, which the plugin can't tell from a retimed one: the host
+    /// numbers frames from the timeline and only says how long the clip is there. A 10s video cut down to
+    /// 2.5s reads as a 4x retime, and every frame is stabilized against the wrong motion data.
+    /// See https://github.com/gyroflow/gyroflow-plugins/issues/25 and /issues/87
+    #[test]
+    fn known_bad_a_trimmed_clip_reads_as_a_retime() {
+        let stretch = ClipTiming::speed_stretch(10_000.0, 75.0, 30.0);
+        assert_eq!(stretch, 4.0);
+        let timing = ClipTiming { speed_stretch: stretch, ..plain(30.0) };
+        assert_eq!(timing.timestamp_us(30.0, None), 4_000_000);
+        // The host saying which source frame it renders is what fixes it
+        assert_eq!(timing.timestamp_us(30.0, Some(30)), 1_000_000);
     }
 
     #[test]
