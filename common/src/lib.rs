@@ -66,6 +66,8 @@ pub enum Params {
     Interpolation,
     FusionStartFrame,
     SaveDefault,
+    StabilizationRangeStart,
+    StabilizationRangeEnd,
 }
 
 thread_local! {
@@ -427,6 +429,8 @@ impl GyroflowPluginBase {
                 ParameterType::Checkbox { id: "DisableStretch",         label: "Disable Gyroflow's stretch", hint: "If you used Input stretch in the lens profile in Gyroflow, and you de-stretched the video separately in your editor (by setting anamorphic squeeze factor), check this to disable Gyroflow's internal stretching.", default: false },
                 ParameterType::Select   { id: "IntegrationMethod",      label: "Integration method",   hint: "IMU integration method", options: vec!["None", "Complementary", "VQF", "Simple gyro", "Simple gyro + accel", "Mahony", "Madgwick"], default: "VQF" },
                 ParameterType::Button   { id: "SaveDefault",            label: "Save as default",      hint: "Save the current smoothness, zoom limit, lens correction, horizon lock and FOV as the defaults for every newly loaded clip (lens_profiles/default.gyroflow)" },
+                ParameterType::Slider   { id: "StabilizationRangeStart", label: "Stabilization range start", hint: "Where in the source video to start computing the stabilization, as a percentage of the whole file. The smoothing and the zoom are worked out from this part alone, so a clip taken from a long file isn't zoomed in to fit motion it never shows.", min: 0.0, max: 100.0, default: 0.0 },
+                ParameterType::Slider   { id: "StabilizationRangeEnd",   label: "Stabilization range end",   hint: "Where in the source video to stop computing the stabilization, as a percentage of the whole file. Leave the range at 0 to 100 for the whole of it.", min: 0.0, max: 100.0, default: 100.0 },
                 //ParameterType::Slider   { id: "FusionStartFrame",       label: "Fusion Start Frame",   hint: "Fusion Start Frame (from Project Settings)", min: 0.0, max: 100000.0, default: 0.0 },
             ] },
             ParameterType::Group { id: "KeyframesGroup", label: "Keyframes", opened: false, parameters: vec![
@@ -664,6 +668,8 @@ impl GyroflowPluginBaseInstance {
         let _ = params.set_enabled(Params::IntegrationMethod, loaded);
         let _ = params.set_enabled(Params::ToggleOverview, loaded);
         let _ = params.set_enabled(Params::ReloadProject, loaded);
+        let _ = params.set_enabled(Params::StabilizationRangeStart, loaded);
+        let _ = params.set_enabled(Params::StabilizationRangeEnd, loaded);
         let _ = params.set_enabled(Params::OutputWidth, loaded);
         let _ = params.set_enabled(Params::OutputHeight, loaded);
         let _ = params.set_enabled(Params::OutputSizeToTimeline, loaded);
@@ -919,7 +925,21 @@ impl GyroflowPluginBaseInstance {
             Params::Rotation | Params::InputRotation | Params::VideoSpeed | Params::IntegrationMethod |
             Params::UseGyroflowsKeyframes | Params::RecalculateKeyframes |
             Params::OutputWidth | Params::OutputHeight | Params::OutputSizeSwap | Params::OutputSizeToTimeline |
-            Params::ToggleOverview | Params::DontDrawOutside | Params::Interpolation)
+            Params::ToggleOverview | Params::DontDrawOutside | Params::Interpolation |
+            Params::StabilizationRangeStart | Params::StabilizationRangeEnd)
+    }
+
+    /// The part of the video to compute the stabilization over, as the fractions `set_trim_ranges` takes, or `None` for
+    /// the whole of it. The smoothing and the zoom are worked out from that part alone, so a clip taken from a long file
+    /// isn't zoomed in to fit motion it never shows. A range that isn't the right way round is no range
+    pub fn stabilization_range(params: &dyn GyroflowPluginParams) -> Option<(f64, f64)> {
+        let start = (params.get_f64(Params::StabilizationRangeStart).unwrap_or(0.0) / 100.0).clamp(0.0, 1.0);
+        let end = (params.get_f64(Params::StabilizationRangeEnd).unwrap_or(100.0) / 100.0).clamp(0.0, 1.0);
+        if end <= start || (start <= 0.0 && end >= 1.0) { None } else { Some((start, end)) }
+    }
+    /// `stabilization_range` as `set_trim_ranges` wants it
+    fn trim_ranges(params: &dyn GyroflowPluginParams) -> Vec<(f64, f64)> {
+        Self::stabilization_range(params).map_or_else(Vec::new, |x| vec![x])
     }
 
     fn interpolation(params: &dyn GyroflowPluginParams) -> gyroflow_core::stabilization::Interpolation {
@@ -952,6 +972,7 @@ impl GyroflowPluginBaseInstance {
             self.fps = gf_params.fps;
         }
         stab.set_fov_overview(params.get_bool(Params::ToggleOverview)?);
+        stab.set_trim_ranges(Self::trim_ranges(params));
         stab.params.write().framebuffer_inverted = self.framebuffer_inverted;
 
         stab.init_size();
@@ -1009,11 +1030,14 @@ impl GyroflowPluginBaseInstance {
         let aspect = |s: (usize, usize)| s.0 as f64 / s.1.max(1) as f64;
         let output_size = size.0.max(size.1) < 320 || size.0 == 0 || size.1 == 0 || (aspect(gf_params.output_size) / aspect(size) - 1.0).abs() <= 0.01;
         let overview = gf_params.fov_overview == params.get_bool(Params::ToggleOverview).unwrap_or_default();
+        // Only a range the instance asks for: a host that works the trim out from the clip itself (After Effects) sets it
+        // on the stabilization without a parameter saying so, and every copy of the effect would fork over it
+        let trim = Self::stabilization_range(params).is_none_or(|x| gf_params.trim_ranges == [x]);
         drop(gf_params);
         let integration = params.get_i32(Params::IntegrationMethod).map_or(true, |x| stab.gyro.read().integration_method == x as usize);
         let interpolation = stab.stabilization.read().interpolation as u32 == Self::interpolation(params) as u32;
 
-        keyframes && output_size && overview && integration && interpolation
+        keyframes && output_size && overview && integration && interpolation && trim
     }
 
     /// Gives the instance a stabilization of its own, under a new instance id, to change from now on. It shared it with
@@ -1195,6 +1219,11 @@ impl GyroflowPluginBaseInstance {
                 if loaded && self.reload_values_from_project {
                     self.reload_values_from_project = false;
                     // What belongs to the clip
+                    // The trim the project was made with, which the parameters hold from now on. The app can trim a video
+                    // to several ranges and the parameters say one, so a project with more of them keeps only the first
+                    let trim = gf_params.trim_ranges.first().copied().unwrap_or((0.0, 1.0));
+                    params.set_f64(Params::StabilizationRangeStart, trim.0 * 100.0)?;
+                    params.set_f64(Params::StabilizationRangeEnd,   trim.1 * 100.0)?;
                     params.set_f64(Params::Rotation,               gf_params.video_rotation)?;
                     params.set_f64(Params::OutputWidth,            self.original_output_size.0 as f64)?;
                     params.set_f64(Params::OutputHeight,           self.original_output_size.1 as f64)?;
@@ -1590,6 +1619,14 @@ impl GyroflowPluginBaseInstance {
                     v.invalidate_blocking_undistortion();
                 }
             }
+            if param == Params::StabilizationRangeStart || param == Params::StabilizationRangeEnd {
+                let ranges = Self::trim_ranges(params);
+                for (_, v) in self.managers.iter() {
+                    v.set_trim_ranges(ranges.clone());
+                    v.invalidate_blocking_smoothing();
+                    v.invalidate_blocking_zooming();
+                }
+            }
             if param == Params::Interpolation {
                 self.managers.clear();
                 manager_cache.lock().clear();
@@ -1838,6 +1875,8 @@ mod tests {
         params.strings.insert(Params::ProjectPath, format!("D:/clips/{}.gyroflow", fastrand::u64(..)));
         params.strings.insert(Params::InstanceId, format!("{}", fastrand::u64(..)));
         params.f64s.insert(Params::Smoothness, 50.0);
+        params.f64s.insert(Params::StabilizationRangeStart, 0.0);
+        params.f64s.insert(Params::StabilizationRangeEnd, 100.0);
         params
     }
     /// An instance with a stabilization set up for `params` in `cache`, as if it loaded it
@@ -1878,9 +1917,10 @@ mod tests {
 
     #[test]
     fn a_copy_set_up_for_other_values_forks_the_stabilization() {
-        let changes: [fn(&mut TestParams); 2] = [
+        let changes: [fn(&mut TestParams); 3] = [
             |p| { p.bools.insert(Params::ToggleOverview, true); },
             |p| { p.f64s.insert(Params::Smoothness, 80.0); },
+            |p| { p.f64s.insert(Params::StabilizationRangeStart, 25.0); },
         ];
         for change in changes {
             let cache = cache();
@@ -1994,5 +2034,44 @@ mod tests {
         assert!(!original.matches_scaled(&Footage { size: (1440, 1080), ..original }));
         assert!(!original.matches_scaled(&Footage { size: (1920, 1080), fps: 30.0, ..original }));
         assert!(!original.matches_scaled(&Footage { size: (1920, 1080), duration_ms: 12_000.0, ..original }));
+    }
+
+    #[test]
+    fn a_stabilization_range_is_the_percents_as_fractions() {
+        let range = |start: f64, end: f64| {
+            let mut params = params();
+            params.f64s.insert(Params::StabilizationRangeStart, start);
+            params.f64s.insert(Params::StabilizationRangeEnd, end);
+            GyroflowPluginBaseInstance::stabilization_range(&params)
+        };
+        assert_eq!(range(25.0, 75.0), Some((0.25, 0.75)));
+        assert_eq!(range(0.0, 50.0), Some((0.0, 0.5)));
+        assert_eq!(range(50.0, 100.0), Some((0.5, 1.0)));
+        // The whole of the video, however it's asked for, is no range: the stabilization is of all of it
+        assert_eq!(range(0.0, 100.0), None);
+        assert_eq!(range(-10.0, 150.0), None);
+        // Nothing to compute a stabilization from, so the whole of it rather than a video that can't be stabilized
+        assert_eq!(range(75.0, 25.0), None);
+        assert_eq!(range(50.0, 50.0), None);
+    }
+
+    #[test]
+    fn the_stabilization_range_is_the_part_of_the_video_the_stabilization_is_computed_from() {
+        let cache = cache();
+        let mut params = params();
+        params.f64s.insert(Params::StabilizationRangeStart, 20.0);
+        params.f64s.insert(Params::StabilizationRangeEnd, 60.0);
+        let (mut inst, stab) = loaded(&mut params, &cache, false);
+        assert_eq!(stab.params.read().trim_ranges, vec![(0.2, 0.6)]);
+
+        params.f64s.insert(Params::StabilizationRangeEnd, 80.0);
+        inst.param_changed(&mut params, &cache, Params::StabilizationRangeEnd, true).unwrap();
+        assert!(inst.managers.iter().all(|(_, x)| x.params.read().trim_ranges == vec![(0.2, 0.8)]));
+
+        // Back to the whole of it, which the core keeps as no range at all
+        params.f64s.insert(Params::StabilizationRangeStart, 0.0);
+        params.f64s.insert(Params::StabilizationRangeEnd, 100.0);
+        inst.param_changed(&mut params, &cache, Params::StabilizationRangeStart, true).unwrap();
+        assert!(inst.managers.iter().all(|(_, x)| x.params.read().trim_ranges.is_empty()));
     }
 }
