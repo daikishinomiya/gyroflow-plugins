@@ -211,19 +211,15 @@ impl Execute for GyroflowPlugin {
                 let mut speed_stretch = 1.0;
                 let mut time_adj = 0.0;
                 if let Ok(range) = instance_data.source_clip.get_frame_range() {
+                    // On the Fusion page the host gives the clip's own frames, so a trimmed clip is only offset. On the
+                    // Edit and Color pages it gives timeline frames, and the clip's length there says whether it's retimed
                     if instance_data.is_fusion_page {
                         time_adj = range.min;
-                    }
-                    if range.max > 0.0 && !instance_data.is_fusion_page {
-                        let duration_at_src_fps = (range.max / src_fps) * 1000.0;
-                        speed_stretch = ((params.duration_ms.round() / duration_at_src_fps.round()) * 100.0).floor() / 100.0;
+                    } else {
+                        speed_stretch = ClipTiming::speed_stretch(params.duration_ms, range.max, src_fps);
                     }
                 }
-
-                // This should cover most cases by default, and for the rest users will use Fusion
-                if speed_stretch == 1.01 || speed_stretch == 0.99 || speed_stretch == 1.02 || speed_stretch == 0.98 || speed_stretch == 1.03 || speed_stretch == 0.97 {
-                    speed_stretch = 1.0;
-                }
+                let timing = ClipTiming { fps, src_fps, time_adj, speed_stretch };
 
                 // The host may tell which source frame it renders (Resolve does, retimed and conformed clips included): the
                 // timestamps are exact then, whatever the frame rates
@@ -242,32 +238,19 @@ impl Execute for GyroflowPlugin {
 
                 let mut time = time;
                 //let time_adj = if instance_data.is_fusion_page { instance_data.params.fusion_start_frame.get_value().unwrap_or_default() } else { 0.0 };
-                time -= time_adj;
-                let mut timestamp_us = ((time / src_fps * 1_000_000.0) * speed_stretch).round() as i64;
+                let mut timestamp_us = timing.timestamp_us(time, src_frame);
 
-                // log::info!("fps: {fps:?}, src_fps: {src_fps:?}, speed_stretch: {speed_stretch:.6}, time: {time:?}, timestamp_us: {timestamp_us:?}");
-
-                if (src_fps - fps).abs() > 0.01 {
-                    let frame = (time / src_fps) * fps * speed_stretch;
-                    timestamp_us = (frame.floor() * (1_000_000.0 / fps)).round() as i64;
-                }
-                if let Some(frame) = src_frame {
-                    timestamp_us = (frame as f64 * (1_000_000.0 / fps)).round() as i64;
-                }
+                // log::info!("timing: {timing:?}, time: {time:?}, timestamp_us: {timestamp_us:?}");
 
                 let source_timestamp_us = params.get_source_timestamp_at_ramped_timestamp(timestamp_us);
                 drop(params);
 
                 if source_timestamp_us != timestamp_us {
-                    time = (source_timestamp_us as f64 / speed_stretch / 1_000_000.0 * src_fps).round();
-                    timestamp_us = ((time / src_fps * 1_000_000.0) * speed_stretch).round() as i64;
-                    if (src_fps - fps).abs() > 0.01 {
-                        let frame = (time / src_fps) * fps * speed_stretch;
-                        timestamp_us = (frame.floor() * (1_000_000.0 / fps)).round() as i64;
-                    }
+                    // Speed ramped: the frame to read is the one the ramp maps this timestamp back to
+                    time = timing.frame_at(source_timestamp_us);
+                    timestamp_us = timing.timestamp_us(time, None);
                 }
 
-                time += time_adj;
                 let source_image = if in_args.get_opengl_enabled().unwrap_or_default() {
                     instance_data.source_clip.load_texture(time, None)?
                 } else {
