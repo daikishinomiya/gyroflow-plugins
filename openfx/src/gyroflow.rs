@@ -570,6 +570,12 @@ impl Execute for GyroflowPlugin {
 
                     if user_edited && matches!(param, Params::SetStabilizationIn | Params::SetStabilizationOut | Params::ClearStabilizationRange | Params::StabilizationRamp) {
                         let time = in_args.get_time()?;
+                        // What the host says about the part of the clip in use (to find out whether the timeline trim can be read)
+                        let props: Option<EffectInstance> = effect.properties().ok();
+                        log::info!("Stabilization range: {param:?} at time {time}, effect duration {:?}, source frame range {:?}, unmapped frame range {:?}",
+                            props.and_then(|p| p.get_effect_duration().ok()),
+                            instance_data.source_clip.get_frame_range().ok(),
+                            instance_data.source_clip.get_unmapped_frame_range().ok());
                         instance_data.plugin.stabilization_range_changed(&mut instance_data.params, param, time).map_err(|e| {
                             log::error!("stabilization_range_changed error: {e:?}");
                             Error::InvalidAction

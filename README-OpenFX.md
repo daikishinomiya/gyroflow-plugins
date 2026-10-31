@@ -64,6 +64,8 @@ The zoom follows the amount, so it eases in and out with it instead of jumping. 
 
 Stabilizes only part of the clip, chosen with the playhead.
 
+The smoothing and the zoom are then computed only from the range and its eases, like a trim range in the Gyroflow app, so movement elsewhere in the clip (a shaky end you've cut away, say) no longer makes the stabilized part zoom in or drift. A trim range set in the Gyroflow project is replaced while a range is set; **Clear range** stabilizes the whole clip, and **Reload project** brings the project's trim back.
+
 #### Set in here
 
 Stabilizes from the current frame on. Before it, the stabilization eases in over the **Ease** duration.

@@ -993,6 +993,7 @@ impl GyroflowPluginBaseInstance {
         }
         self.cache_keyframes(params, use_gyroflows_keyframes, self.num_frames, self.fps.max(1.0));
         self.set_keyframe_provider(stab);
+        self.apply_stabilization_trim(params, stab);
 
         if let Ok(im) = params.get_i32(Params::IntegrationMethod) {
             let mut gyro = stab.gyro.write();
@@ -1026,7 +1027,8 @@ impl GyroflowPluginBaseInstance {
         self.keyframable_params = Arc::new(RwLock::new(KeyframableParams::default()));
         self.cache_keyframes(params, use_gyroflows_keyframes, self.num_frames, self.fps.max(1.0));
         let Some(provider) = keyframe_provider(stab) else { return false; };
-        let keyframes = provider.read().checksum() == self.keyframable_params.read().checksum();
+        let keyframes = provider.read().checksum() == self.keyframable_params.read().checksum()
+            && self.stabilization_trim(params).is_none_or(|trim| trim == stab.trim_ranges());
 
         let gf_params = stab.params.read();
         let input_rotation = params.get_f64(Params::InputRotation).unwrap_or_default();
@@ -1626,6 +1628,28 @@ impl GyroflowPluginBaseInstance {
         Ok(())
     }
 
+    /// The trim range the stabilization is computed for, as fractions of the clip, from the Stabilization range: from the
+    /// start of the ease in to the end of the ease out. The smoothing and the zoom only look at that part then, so motion
+    /// elsewhere in the clip doesn't affect them. `None` without a range: the project's trim range stays as it is
+    pub fn stabilization_trim(&self, params: &dyn GyroflowPluginParams) -> Option<Vec<(f64, f64)>> {
+        let point = |p: Params| params.get_string(p).ok().and_then(|x| x.trim().parse::<f64>().ok());
+        let (range_in, range_out) = (point(Params::StabilizationIn), point(Params::StabilizationOut));
+        if range_in.is_none() && range_out.is_none() { return None; }
+        let frames = self.num_frames.max(1) as f64;
+        let ease = params.get_f64(Params::StabilizationRamp).unwrap_or(12.0).round().max(1.0);
+        let start = range_in.map(|i| ((i - ease) / frames).max(0.0)).unwrap_or(0.0);
+        let end = range_out.map(|o| ((o + ease) / frames).min(1.0)).unwrap_or(1.0);
+        Some(if end > start && (start > 0.0 || end < 1.0) { vec![(start, end)] } else { Vec::new() })
+    }
+    /// Sets the trim range of `stab` for the Stabilization range (see `stabilization_trim`). Returns whether it changed
+    fn apply_stabilization_trim(&self, params: &dyn GyroflowPluginParams, stab: &StabilizationManager) -> bool {
+        let Some(trim) = self.stabilization_trim(params) else { return false; };
+        if stab.trim_ranges() == trim { return false; }
+        log::info!("Stabilization range: trim ranges {trim:?} ({} frames)", self.num_frames);
+        stab.set_trim_ranges(trim);
+        true
+    }
+
     /// The keyframes of Stabilization amount (frame, percent) for a stabilization range: fully stabilized from `range_in` to
     /// `range_out`, easing in over the `ease` frames before the in point and out over the ones after the out point. A
     /// missing point leaves that side stabilized up to the clip's edge. The ease is written as a few keyframes on a
@@ -1710,6 +1734,15 @@ impl GyroflowPluginBaseInstance {
         };
         if let Some(note) = note { text = format!("{text} ({note})"); }
         params.set_string(Params::StabilizationRange, &text)?;
+
+        let managers = self.managers.iter().map(|(_, v)| v.clone()).collect::<Vec<_>>();
+        for stab in &managers {
+            if param == Params::ClearStabilizationRange {
+                stab.set_trim_ranges(Vec::new());
+            } else {
+                self.apply_stabilization_trim(params, stab);
+            }
+        }
 
         let use_gyroflows_keyframes = params.get_bool(Params::UseGyroflowsKeyframes).unwrap_or_default();
         self.cache_keyframes(params, use_gyroflows_keyframes, self.num_frames, fps);
@@ -1983,7 +2016,15 @@ mod tests {
         inst.stabilization_range_changed(&mut params, Params::SetStabilizationIn, 200.0).unwrap();
         assert_eq!(params.get_string(Params::StabilizationOut).unwrap(), "");
         assert!(params.get_string(Params::StabilizationRange).unwrap().contains("out point cleared"));
+        // The stabilization is computed for the range with its eases, as fractions of the clip
+        inst.num_frames = 1000;
+        params.strings.insert(Params::StabilizationOut, "500".into());
+        params.strings.insert(Params::StabilizationIn, "100".into());
+        assert_eq!(inst.stabilization_trim(&params), Some(vec![(0.09, 0.51)]));
+        params.strings.insert(Params::StabilizationIn, "".into());
+        assert_eq!(inst.stabilization_trim(&params), Some(vec![(0.0, 0.51)]));
         inst.stabilization_range_changed(&mut params, Params::ClearStabilizationRange, 0.0).unwrap();
+        assert_eq!(inst.stabilization_trim(&params), None);
         assert_eq!(params.get_string(Params::StabilizationIn).unwrap(), "");
         assert_eq!(params.get_f64(Params::StabilizationAmount).unwrap(), 100.0);
         assert_eq!(params.get_string(Params::StabilizationRange).unwrap(), "Whole clip");
