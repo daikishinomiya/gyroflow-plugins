@@ -42,6 +42,9 @@ define_params!(ParamHandler {
         LoadedProject       => loaded_project:   ParamHandle<String>,
         LoadedPreset        => loaded_preset:    ParamHandle<String>,
         LoadedLens          => loaded_lens:      ParamHandle<String>,
+        StabilizationRange  => stab_range:       ParamHandle<String>,
+        StabilizationIn     => stab_in:          ParamHandle<String>,
+        StabilizationOut    => stab_out:         ParamHandle<String>,
     ],
     bools: [
         DisableStretch        => disable_stretch:         ParamHandle<bool>,
@@ -54,6 +57,8 @@ define_params!(ParamHandler {
         InputRotation         => input_rotation:           ParamHandle<Double>,
         Fov                   => fov:                      ParamHandle<Double>,
         Smoothness            => smoothness:               ParamHandle<Double>,
+        StabilizationAmount   => stab_amount:              ParamHandle<Double>,
+        StabilizationRamp     => stab_ramp:                ParamHandle<Double>,
         ZoomLimit             => zoom_limit:               ParamHandle<Double>,
         LensCorrectionStrength=> lens_correction_strength: ParamHandle<Double>,
         HorizonLockAmount     => horizon_lock_amount:      ParamHandle<Double>,
@@ -463,6 +468,11 @@ impl Execute for GyroflowPlugin {
                         use_gyroflows_keyframes:  param_set.parameter("UseGyroflowsKeyframes")?,
                         fov:                      param_set.parameter("Fov")?,
                         smoothness:               param_set.parameter("Smoothness")?,
+                        stab_amount:              param_set.parameter("StabilizationAmount")?,
+                        stab_ramp:                param_set.parameter("StabilizationRamp")?,
+                        stab_range:               param_set.parameter("StabilizationRange")?,
+                        stab_in:                  param_set.parameter("StabilizationIn")?,
+                        stab_out:                 param_set.parameter("StabilizationOut")?,
                         zoom_limit:               param_set.parameter("ZoomLimit")?,
                         lens_correction_strength: param_set.parameter("LensCorrectionStrength")?,
                         horizon_lock_amount:      param_set.parameter("HorizonLockAmount")?,
@@ -552,10 +562,19 @@ impl Execute for GyroflowPlugin {
                         instance_data.plugin.timeline_size = ((rect.x2 - rect.x1) as usize, (rect.y2 - rect.y1) as usize);
                     }
 
-                    instance_data.plugin.param_changed(&mut instance_data.params, &self.gyroflow_plugin.manager_cache, param, in_args.get_change_reason()? == Change::UserEdited).map_err(|e| {
+                    let user_edited = in_args.get_change_reason()? == Change::UserEdited;
+                    instance_data.plugin.param_changed(&mut instance_data.params, &self.gyroflow_plugin.manager_cache, param, user_edited).map_err(|e| {
                         log::error!("param_changed error: {e:?}");
                         Error::InvalidAction
                     })?;
+
+                    if user_edited && matches!(param, Params::SetStabilizationIn | Params::SetStabilizationOut | Params::ClearStabilizationRange | Params::StabilizationRamp) {
+                        let time = in_args.get_time()?;
+                        instance_data.plugin.stabilization_range_changed(&mut instance_data.params, param, time).map_err(|e| {
+                            log::error!("stabilization_range_changed error: {e:?}");
+                            Error::InvalidAction
+                        })?;
+                    }
                 } else {
                     log::error!("Unknown param name: {:?}", in_args.get_name()?);
                 }
@@ -683,6 +702,7 @@ impl Execute for GyroflowPlugin {
                     .set_children(&[
                         "ProjectGroup",
                         "AdjustGroup",
+                        "StabilizationRangeGroup",
                         "KeyframesGroup",
                         "ToggleOverview", "DontDrawOutside", "IncludeProjectData"
                     ])?;

@@ -18,3 +18,7 @@ inherits = "release"
 codegen-units = 1
 lto = true
 strip = true
+
+# Gyroflow core with the patches in core-patches/ (fetched and patched by `just core`)
+[patch."https://github.com/gyroflow/gyroflow.git"]
+gyroflow-core = { path = "../ext/gyroflow/src/core" }

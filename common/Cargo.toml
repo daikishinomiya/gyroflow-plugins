@@ -24,3 +24,7 @@ win_dbg_logger = "0.1"
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 oslog = "0.2"
+
+# Gyroflow core with the patches in core-patches/ (fetched and patched by `just core`)
+[patch."https://github.com/gyroflow/gyroflow.git"]
+gyroflow-core = { path = "../ext/gyroflow/src/core" }

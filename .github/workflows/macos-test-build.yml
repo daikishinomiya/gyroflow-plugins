@@ -2,7 +2,7 @@ name: macOS test build (unsigned)
 
 on:
   push:
-    branches: [ 'fix/**' ]
+    branches: [ 'fix/**', 'feat/**' ]
   workflow_dispatch:
 
 permissions:
@@ -19,6 +19,8 @@ jobs:
       - uses: extractions/setup-just@v2
       - name: Install dependencies
         run: just install-deps
+      - name: Fetch and patch Gyroflow core
+        run: just core
       - name: Build OpenFX plugin (Apple silicon)
         env:
           MACOSX_DEPLOYMENT_TARGET: "10.15"
@@ -31,25 +33,26 @@ jobs:
       - name: Package bundle (ad-hoc signed)
         run: |
           version=$(grep '^version' openfx/Cargo.toml | sed -E 's/version = "(.+)".*/\1/')
+          label=$(echo "${GITHUB_REF_NAME}" | sed -E 's#^(fix|feat)/##; s#[^A-Za-z0-9]+#-#g' | cut -c1-24)
           out=target/pkg/Gyroflow.ofx.bundle/Contents
           mkdir -p "$out/MacOS"
           cp target/aarch64-apple-darwin/deploy/libgyroflow_ofx.dylib "$out/MacOS/Gyroflow.ofx"
           cp openfx/res/Info.plist "$out/"
           cp LICENSE "$out/"
           /usr/libexec/PlistBuddy -c "add CFBundleVersion string ${version}.${GITHUB_RUN_NUMBER}" "$out/Info.plist"
-          /usr/libexec/PlistBuddy -c "add CFBundleShortVersionString string ${version}-metalfix.${GITHUB_RUN_NUMBER}" "$out/Info.plist"
+          /usr/libexec/PlistBuddy -c "add CFBundleShortVersionString string ${version}-${label}.${GITHUB_RUN_NUMBER}" "$out/Info.plist"
           codesign --force --deep -s - target/pkg/Gyroflow.ofx.bundle
           codesign --verify --deep target/pkg/Gyroflow.ofx.bundle
-          cd target/pkg && ditto -c -k --keepParent Gyroflow.ofx.bundle ../Gyroflow-OpenFX-macos-metalfix.zip
+          cd target/pkg && ditto -c -k --keepParent Gyroflow.ofx.bundle ../Gyroflow-OpenFX-macos-test.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Gyroflow-OpenFX-macos-metalfix
-          path: target/Gyroflow-OpenFX-macos-metalfix.zip
+          name: Gyroflow-OpenFX-macos-test
+          path: target/Gyroflow-OpenFX-macos-test.zip
       - name: Publish as pre-release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: metalfix-${{ github.run_number }}
-          name: macOS Metal crash fix (test build ${{ github.run_number }})
+          tag_name: test-${{ github.run_number }}
+          name: macOS test build ${{ github.run_number }} (${{ github.ref_name }})
           target_commitish: ${{ github.sha }}
           prerelease: true
-          files: target/Gyroflow-OpenFX-macos-metalfix.zip
+          files: target/Gyroflow-OpenFX-macos-test.zip

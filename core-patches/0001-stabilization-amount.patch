@@ -1,0 +1,50 @@
+diff --git a/src/core/gyro_source/mod.rs b/src/core/gyro_source/mod.rs
+index 31ac6c7..b93a5db 100644
+--- a/src/core/gyro_source/mod.rs
++++ b/src/core/gyro_source/mod.rs
+@@ -821,6 +821,19 @@ impl GyroSource {
+             horizon_lock.lock(&mut smoothed_quaternions, &self.quaternions, &file_metadata.gravity_vectors, self.use_gravity_vectors, self.integration_method, compute_params);
+         }
+ 
++        // Stabilization amount: 1 is the smoothed motion, 0 the camera's own motion (no stabilization), in between a blend of
++        // the two. Keyframed, it turns the stabilization on and off over parts of the clip, easing in and out. It's applied
++        // before the zoom is computed from the result, so the zoom follows it and nothing pops
++        if compute_params.keyframes.is_keyframed(&crate::KeyframeType::StabilizationAmount) {
++            for (ts, sq) in smoothed_quaternions.iter_mut() {
++                let amount = compute_params.keyframes.value_at_gyro_timestamp(&crate::KeyframeType::StabilizationAmount, *ts as f64 / 1000.0).unwrap_or(1.0).clamp(0.0, 1.0);
++                if amount >= 1.0 { continue; }
++                if let Some(raw) = self.quaternions.get(ts) {
++                    *sq = if amount <= 0.0 { *raw } else { raw.try_slerp(sq, amount, 1e-9).unwrap_or(if amount < 0.5 { *raw } else { *sq }) };
++                }
++            }
++        }
++
+         let max_angles = crate::Smoothing::get_max_angles(&self.quaternions, &smoothed_quaternions, compute_params);
+ 
+         for (sq, q) in smoothed_quaternions.iter_mut().zip(self.quaternions.iter()) {
+diff --git a/src/core/keyframes.rs b/src/core/keyframes.rs
+index 8d11ace..6974550 100644
+--- a/src/core/keyframes.rs
++++ b/src/core/keyframes.rs
+@@ -51,6 +51,7 @@ define_keyframes! {
+     SmoothingParamPitch,         "#59c451", "Pitch smoothness",                 |v| format!("{:.2}", v),
+     SmoothingParamRoll,          "#51c485", "Roll smoothness",                  |v| format!("{:.2}", v),
+     SmoothingParamYaw,           "#88c451", "Yaw smoothness",                   |v| format!("{:.2}", v),
++    StabilizationAmount,         "#c6ef6b", "Stabilization amount",             |v| format!("{:.0}%", v * 100.0),
+ 
+     VideoSpeed,                  "#f6e926", "Video speed",                      |v| format!("{:.1}%", v * 100.0),
+ }
+diff --git a/src/core/lib.rs b/src/core/lib.rs
+index 35e4770..5209497 100644
+--- a/src/core/lib.rs
++++ b/src/core/lib.rs
+@@ -2463,7 +2463,8 @@ impl StabilizationManager {
+             KeyframeType::SmoothingParamSmoothness |
+             KeyframeType::SmoothingParamPitch |
+             KeyframeType::SmoothingParamRoll |
+-            KeyframeType::SmoothingParamYaw => self.invalidate_smoothing(),
++            KeyframeType::SmoothingParamYaw |
++            KeyframeType::StabilizationAmount => self.invalidate_smoothing(),
+             _ => { }
+         }
+     }

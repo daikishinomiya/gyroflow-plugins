@@ -33,6 +33,7 @@ pub enum Params {
     AdjustGroup, AdjustGroupEnd,
     Fov,
     Smoothness,
+    StabilizationAmount,
     ZoomLimit,
     LensCorrectionStrength,
     HorizonLockAmount,
@@ -46,6 +47,14 @@ pub enum Params {
     VideoSpeed,
     DisableStretch,
     IntegrationMethod,
+    StabilizationRangeGroup, StabilizationRangeGroupEnd,
+    StabilizationRange,
+    SetStabilizationIn,
+    SetStabilizationOut,
+    ClearStabilizationRange,
+    StabilizationRamp,
+    StabilizationIn,
+    StabilizationOut,
     KeyframesGroup, KeyframesGroupEnd,
     UseGyroflowsKeyframes,
     RecalculateKeyframes,
@@ -394,13 +403,15 @@ impl GyroflowPluginBase {
         }
     }
 
-    pub fn get_param_definitions() -> [ParameterType; 13] {
+    pub fn get_param_definitions() -> [ParameterType; 16] {
         [
             ParameterType::HiddenString { id: "InstanceId" },
             ParameterType::HiddenString { id: "ProjectPath" },
             ParameterType::HiddenString { id: "ProjectData" },
             ParameterType::HiddenString { id: "EmbeddedLensProfile" },
             ParameterType::HiddenString { id: "EmbeddedPreset" },
+            ParameterType::HiddenString { id: "StabilizationIn" },
+            ParameterType::HiddenString { id: "StabilizationOut" },
             ParameterType::Group { id: "ProjectGroup", label: "Gyroflow project", opened: true, parameters: vec![
                 ParameterType::Text    { id: "Status",            label: "Status",                   hint: "Status" },
                 ParameterType::Button  { id: "LoadCurrent",       label: "Load for current file",    hint: "Try to load project file for current video file, or try to stabilize that video file directly" },
@@ -412,6 +423,7 @@ impl GyroflowPluginBase {
             ] },
             ParameterType::Group { id: "AdjustGroup", label: "Adjust parameters", opened: true, parameters: vec![
                 ParameterType::Slider   { id: "Smoothness",             label: "Smoothness",           hint: "Smoothness",                   min: 1.0,    max: 300.0, default: 50.0 },
+                ParameterType::Slider   { id: "StabilizationAmount",    label: "Stabilization amount", hint: "How much of the stabilization is applied: 100% is fully stabilized, 0% is the camera's own motion. Keyframe it to stabilize only part of the clip, or use Stabilization range to set the keyframes for you", min: 0.0, max: 100.0, default: 100.0 },
                 ParameterType::Slider   { id: "ZoomLimit",              label: "Zoom limit",           hint: "Zoom limit",                   min: 51.0,   max: 300.0, default: 130.0 },
                 ParameterType::Slider   { id: "LensCorrectionStrength", label: "Lens correction",      hint: "Lens correction",              min: 0.0,    max: 100.0, default: 100.0 },
                 ParameterType::Slider   { id: "HorizonLockAmount",      label: "Horizon lock",         hint: "Horizon lock amount",          min: 0.0,    max: 100.0, default: 0.0 },
@@ -428,6 +440,13 @@ impl GyroflowPluginBase {
                 ParameterType::Select   { id: "IntegrationMethod",      label: "Integration method",   hint: "IMU integration method", options: vec!["None", "Complementary", "VQF", "Simple gyro", "Simple gyro + accel", "Mahony", "Madgwick"], default: "VQF" },
                 ParameterType::Button   { id: "SaveDefault",            label: "Save as default",      hint: "Save the current smoothness, zoom limit, lens correction, horizon lock and FOV as the defaults for every newly loaded clip (lens_profiles/default.gyroflow)" },
                 //ParameterType::Slider   { id: "FusionStartFrame",       label: "Fusion Start Frame",   hint: "Fusion Start Frame (from Project Settings)", min: 0.0, max: 100000.0, default: 0.0 },
+            ] },
+            ParameterType::Group { id: "StabilizationRangeGroup", label: "Stabilization range", opened: false, parameters: vec![
+                ParameterType::Text     { id: "StabilizationRange",      label: "Range",        hint: "The part of the clip that is stabilized. Outside of it the stabilization eases out, over the Ease duration" },
+                ParameterType::Button   { id: "SetStabilizationIn",      label: "Set in here",  hint: "Stabilize from the current frame on (keyframes Stabilization amount)" },
+                ParameterType::Button   { id: "SetStabilizationOut",     label: "Set out here", hint: "Stabilize up to the current frame (keyframes Stabilization amount)" },
+                ParameterType::Button   { id: "ClearStabilizationRange", label: "Clear range",  hint: "Stabilize the whole clip again (removes the Stabilization amount keyframes)" },
+                ParameterType::Slider   { id: "StabilizationRamp",       label: "Ease (frames)", hint: "How many frames the stabilization takes to ease in before the in point and out after the out point", min: 0.0, max: 120.0, default: 12.0 },
             ] },
             ParameterType::Group { id: "KeyframesGroup", label: "Keyframes", opened: false, parameters: vec![
                 ParameterType::Checkbox { id: "UseGyroflowsKeyframes", label: "Use Gyroflow's keyframes", hint: "Use internal Gyroflow's keyframes, instead of the editor ones.", default: false },
@@ -650,6 +669,7 @@ impl GyroflowPluginBaseInstance {
     pub fn update_loaded_state(&mut self, params: &mut dyn GyroflowPluginParams, loaded: bool) {
         let _ = params.set_enabled(Params::Fov, loaded);
         let _ = params.set_enabled(Params::Smoothness, loaded);
+        let _ = params.set_enabled(Params::StabilizationAmount, loaded);
         let _ = params.set_enabled(Params::ZoomLimit, loaded);
         let _ = params.set_enabled(Params::LensCorrectionStrength, loaded);
         let _ = params.set_enabled(Params::HorizonLockAmount, loaded);
@@ -784,10 +804,11 @@ impl GyroflowPluginBaseInstance {
     }
     /// The parameters whose values over time `cache_keyframes` caches for the stabilization: the keyframe type of each,
     /// and the scale from the parameter's values to Gyroflow's
-    pub const KEYFRAMABLE_PARAMS: [(KeyframeType, Params, f64); 10] = [
+    pub const KEYFRAMABLE_PARAMS: [(KeyframeType, Params, f64); 11] = [
         (KeyframeType::Fov,                       Params::Fov,                    1.0),
         (KeyframeType::MaxZoom,                   Params::ZoomLimit,              1.0),
         (KeyframeType::SmoothingParamSmoothness,  Params::Smoothness,             100.0),
+        (KeyframeType::StabilizationAmount,       Params::StabilizationAmount,    100.0),
         (KeyframeType::LensCorrectionStrength,    Params::LensCorrectionStrength, 100.0),
         (KeyframeType::LockHorizonAmount,         Params::HorizonLockAmount,      1.0),
         (KeyframeType::LockHorizonRoll,           Params::HorizonLockRoll,        1.0),
@@ -878,7 +899,7 @@ impl GyroflowPluginBaseInstance {
                     v.invalidate_blocking_smoothing();
                     v.invalidate_blocking_zooming();
                 }
-                Params::Smoothness | Params::ZoomLimit | Params::HorizonLockAmount | Params::HorizonLockRoll |
+                Params::Smoothness | Params::StabilizationAmount | Params::ZoomLimit | Params::HorizonLockAmount | Params::HorizonLockRoll |
                 Params::AdditionalPitch | Params::AdditionalYaw | Params::RecalculateKeyframes => {
                     v.invalidate_blocking_smoothing();
                     v.invalidate_blocking_zooming();
@@ -914,10 +935,11 @@ impl GyroflowPluginBaseInstance {
     /// may only do to one of its own
     pub fn changes_stabilization(param: Params) -> bool {
         matches!(param,
-            Params::Fov | Params::Smoothness | Params::ZoomLimit | Params::LensCorrectionStrength |
+            Params::Fov | Params::Smoothness | Params::StabilizationAmount | Params::ZoomLimit | Params::LensCorrectionStrength |
             Params::HorizonLockAmount | Params::HorizonLockRoll | Params::AdditionalPitch | Params::AdditionalYaw |
             Params::Rotation | Params::InputRotation | Params::VideoSpeed | Params::IntegrationMethod |
             Params::UseGyroflowsKeyframes | Params::RecalculateKeyframes |
+            Params::SetStabilizationIn | Params::SetStabilizationOut | Params::ClearStabilizationRange | Params::StabilizationRamp |
             Params::OutputWidth | Params::OutputHeight | Params::OutputSizeSwap | Params::OutputSizeToTimeline |
             Params::ToggleOverview | Params::DontDrawOutside | Params::Interpolation)
     }
@@ -1254,6 +1276,7 @@ impl GyroflowPluginBaseInstance {
                                 match k {
                                     KeyframeType::Fov                      => { set_keys!(Params::Fov,                    1.0); },
                                     KeyframeType::SmoothingParamSmoothness => { set_keys!(Params::Smoothness,             100.0); },
+                                    KeyframeType::StabilizationAmount      => { set_keys!(Params::StabilizationAmount,    100.0); },
                                     KeyframeType::MaxZoom                  => { set_keys!(Params::ZoomLimit,              1.0); },
                                     KeyframeType::LensCorrectionStrength   => { set_keys!(Params::LensCorrectionStrength, 100.0); },
                                     KeyframeType::LockHorizonAmount        => { set_keys!(Params::HorizonLockAmount,      1.0); },
@@ -1572,7 +1595,7 @@ impl GyroflowPluginBaseInstance {
                 }
             }
             match param {
-                Params::Fov | Params::Smoothness | Params::ZoomLimit | Params::LensCorrectionStrength |
+                Params::Fov | Params::Smoothness | Params::StabilizationAmount | Params::ZoomLimit | Params::LensCorrectionStrength |
                 Params::HorizonLockAmount | Params::HorizonLockRoll |
                 //Params::PositionX | Params::PositionY |
                 Params::AdditionalPitch | Params::AdditionalYaw |
@@ -1600,6 +1623,97 @@ impl GyroflowPluginBaseInstance {
             }
         }
 
+        Ok(())
+    }
+
+    /// The keyframes of Stabilization amount (frame, percent) for a stabilization range: fully stabilized from `range_in` to
+    /// `range_out`, easing in over the `ease` frames before the in point and out over the ones after the out point. A
+    /// missing point leaves that side stabilized up to the clip's edge. The ease is written as a few keyframes on a
+    /// smoothstep curve, so it eases whatever interpolation the host uses between them
+    pub fn stabilization_range_keyframes(range_in: Option<f64>, range_out: Option<f64>, ease: f64) -> Vec<(f64, f64)> {
+        let ease = ease.round().max(1.0);
+        let smoothstep = |x: f64| x * x * (3.0 - 2.0 * x);
+        let mut keys = std::collections::BTreeMap::<i64, f64>::new();
+        // Up to 4 steps, at most one per frame so the ramp's ends don't land on the same frame
+        let steps = (ease as usize).min(4);
+        if let Some(i) = range_in {
+            for k in 0..=steps {
+                let x = k as f64 / steps as f64;
+                let frame = (i - ease + ease * x).round() as i64;
+                if frame < 0 && k < steps { continue; }
+                keys.insert(frame, 100.0 * smoothstep(x));
+            }
+        }
+        if let Some(o) = range_out {
+            for k in 0..=steps {
+                let x = k as f64 / steps as f64;
+                let frame = (o + ease * x).round() as i64;
+                keys.insert(frame, 100.0 * (1.0 - smoothstep(x)));
+            }
+        }
+        keys.into_iter().map(|(f, v)| (f as f64, (v * 100.0).round() / 100.0)).collect()
+    }
+
+    /// Handles the Stabilization range buttons and the Ease slider (`time` is the host's current frame): keeps the in and
+    /// out points, rewrites the Stabilization amount keyframes for them and recomputes the stabilization. Hosts that
+    /// can't tell the current frame don't show the range
+    pub fn stabilization_range_changed(&mut self, params: &mut dyn GyroflowPluginParams, param: Params, time: f64) -> PluginResult<()> {
+        let point = |params: &dyn GyroflowPluginParams, p: Params| params.get_string(p).ok().and_then(|x| x.trim().parse::<f64>().ok());
+        let frame = time.round();
+        let mut note = None;
+        match param {
+            Params::SetStabilizationIn => {
+                params.set_string(Params::StabilizationIn, &format!("{frame}"))?;
+                if point(params, Params::StabilizationOut).is_some_and(|o| o <= frame) {
+                    params.set_string(Params::StabilizationOut, "")?;
+                    note = Some("out point cleared, it was before the in point");
+                }
+            }
+            Params::SetStabilizationOut => {
+                params.set_string(Params::StabilizationOut, &format!("{frame}"))?;
+                if point(params, Params::StabilizationIn).is_some_and(|i| i >= frame) {
+                    params.set_string(Params::StabilizationIn, "")?;
+                    note = Some("in point cleared, it was after the out point");
+                }
+            }
+            Params::ClearStabilizationRange => {
+                params.set_string(Params::StabilizationIn, "")?;
+                params.set_string(Params::StabilizationOut, "")?;
+            }
+            Params::StabilizationRamp => { }
+            _ => return Ok(()),
+        }
+        let (range_in, range_out) = (point(params, Params::StabilizationIn), point(params, Params::StabilizationOut));
+        if param == Params::StabilizationRamp && range_in.is_none() && range_out.is_none() {
+            return Ok(()); // No range, the amount stays as the user keyframed it
+        }
+
+        params.clear_keyframes(Params::StabilizationAmount)?;
+        if range_in.is_none() && range_out.is_none() {
+            params.set_f64(Params::StabilizationAmount, 100.0)?;
+        } else {
+            let ease = params.get_f64(Params::StabilizationRamp).unwrap_or(12.0);
+            for (frame, v) in Self::stabilization_range_keyframes(range_in, range_out, ease) {
+                params.set_f64_at_time(Params::StabilizationAmount, TimeType::Frame(frame), v)?;
+            }
+        }
+
+        let fps = self.fps.max(1.0);
+        let describe = |x: Option<f64>, edge: &str| match x {
+            Some(f) => format!("{f:.0} ({:.2}s)", f / fps),
+            None => edge.to_owned(),
+        };
+        let mut text = if range_in.is_none() && range_out.is_none() {
+            "Whole clip".to_owned()
+        } else {
+            format!("In {} | Out {}", describe(range_in, "start"), describe(range_out, "end"))
+        };
+        if let Some(note) = note { text = format!("{text} ({note})"); }
+        params.set_string(Params::StabilizationRange, &text)?;
+
+        let use_gyroflows_keyframes = params.get_bool(Params::UseGyroflowsKeyframes).unwrap_or_default();
+        self.cache_keyframes(params, use_gyroflows_keyframes, self.num_frames, fps);
+        self.recompute_for(params, Params::StabilizationAmount, use_gyroflows_keyframes);
         Ok(())
     }
 }
@@ -1832,6 +1946,49 @@ mod tests {
         fn set_f64_at_time(&mut self, _: Params, _: TimeType, _: f64) -> PluginResult<()> { Ok(()) }
     }
 
+    #[test]
+    fn stabilization_range_keyframes() {
+        let kf = GyroflowPluginBaseInstance::stabilization_range_keyframes;
+        // In and out: off before, easing in over the 12 frames up to 100, eased out over the 12 after 200
+        let k = kf(Some(100.0), Some(200.0), 12.0);
+        assert_eq!(k.first(), Some(&(88.0, 0.0)));
+        assert!(k.contains(&(100.0, 100.0)) && k.contains(&(200.0, 100.0)));
+        assert_eq!(k.last(), Some(&(212.0, 0.0)));
+        assert!(k.windows(2).all(|w| w[0].0 < w[1].0), "sorted, one key per frame");
+        // Eases: slow at both ends of the ramp
+        let ramp: Vec<f64> = k.iter().filter(|x| x.0 <= 100.0).map(|x| x.1).collect();
+        assert_eq!(ramp, vec![0.0, 15.63, 50.0, 84.38, 100.0]);
+        // Only an in point near the start: the keys before frame 0 are dropped, the in point stays
+        let k = kf(Some(3.0), None, 12.0);
+        assert!(k.iter().all(|x| x.0 >= 0.0) && k.last() == Some(&(3.0, 100.0)));
+        // Only an out point: stabilized up to it, off after
+        let k = kf(None, Some(50.0), 0.0);
+        assert_eq!(k.first(), Some(&(50.0, 100.0)));
+        assert_eq!(k.last(), Some(&(51.0, 0.0)));
+        // Nothing set, nothing keyframed
+        assert!(kf(None, None, 12.0).is_empty());
+    }
+
+    #[test]
+    fn stabilization_range_buttons() {
+        let mut params = params();
+        params.f64s.insert(Params::StabilizationRamp, 10.0);
+        let mut inst = GyroflowPluginBaseInstance { fps: 25.0, ..Default::default() };
+        inst.stabilization_range_changed(&mut params, Params::SetStabilizationIn, 50.0).unwrap();
+        assert_eq!(params.get_string(Params::StabilizationIn).unwrap(), "50");
+        inst.stabilization_range_changed(&mut params, Params::SetStabilizationOut, 150.4).unwrap();
+        assert_eq!(params.get_string(Params::StabilizationOut).unwrap(), "150");
+        assert_eq!(params.get_string(Params::StabilizationRange).unwrap(), "In 50 (2.00s) | Out 150 (6.00s)");
+        // An in point after the out point clears the out point
+        inst.stabilization_range_changed(&mut params, Params::SetStabilizationIn, 200.0).unwrap();
+        assert_eq!(params.get_string(Params::StabilizationOut).unwrap(), "");
+        assert!(params.get_string(Params::StabilizationRange).unwrap().contains("out point cleared"));
+        inst.stabilization_range_changed(&mut params, Params::ClearStabilizationRange, 0.0).unwrap();
+        assert_eq!(params.get_string(Params::StabilizationIn).unwrap(), "");
+        assert_eq!(params.get_f64(Params::StabilizationAmount).unwrap(), 100.0);
+        assert_eq!(params.get_string(Params::StabilizationRange).unwrap(), "Whole clip");
+    }
+
     type Cache = Mutex<LruCache<String, Arc<StabilizationManager>>>;
 
     fn cache() -> Cache {
@@ -1842,6 +1999,7 @@ mod tests {
         params.strings.insert(Params::ProjectPath, format!("D:/clips/{}.gyroflow", fastrand::u64(..)));
         params.strings.insert(Params::InstanceId, format!("{}", fastrand::u64(..)));
         params.f64s.insert(Params::Smoothness, 50.0);
+        params.f64s.insert(Params::StabilizationAmount, 100.0);
         params
     }
     /// An instance with a stabilization set up for `params` in `cache`, as if it loaded it

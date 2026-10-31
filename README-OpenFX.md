@@ -48,6 +48,69 @@ If your video file is from GoPro 8+, DJI or Insta360, you can also select video 
 
 ## For more detailed instructions, see the [docs](https://docs.gyroflow.xyz/app/video-editor-plugins/general-plugin-workflow)
 
+# Interface additions
+
+These controls sit alongside the ones described on the [DaVinci Resolve (OpenFX) docs page](https://docs.gyroflow.xyz/app/video-editor-plugins/davinci-resolve-openfx#interface).
+
+### Adjust parameters
+
+#### Stabilization amount
+
+How much of the stabilization is applied. **100%** is fully stabilized, **0%** is the camera's own motion, and values in between blend the two. Keyframe it in the Inspector to stabilize only part of a clip, or let **Stabilization range** set the keyframes for you.
+
+The zoom follows the amount, so it eases in and out with it instead of jumping. Lens correction is not affected: keyframe **Lens correction** as well if the unstabilized parts should keep the lens's original distortion.
+
+### Stabilization range
+
+Stabilizes only part of the clip, chosen with the playhead.
+
+#### Set in here
+
+Stabilizes from the current frame on. Before it, the stabilization eases in over the **Ease** duration.
+
+#### Set out here
+
+Stabilizes up to the current frame. After it, the stabilization eases out over the **Ease** duration.
+
+Setting an in point after the out point (or an out point before the in point) clears the other one, and the **Range** field says so.
+
+#### Clear range
+
+Stabilizes the whole clip again and removes the **Stabilization amount** keyframes.
+
+#### Ease (frames)
+
+How many frames the stabilization takes to ease in before the in point and out after the out point. Changing it updates the keyframes of the current range. **0** switches it within a single frame.
+
+#### Range
+
+Shows the current in and out points, in clip frames and seconds.
+
+> [!NOTE]
+> **Set in here**, **Set out here**, **Clear range** and **Ease** rewrite the **Stabilization amount** keyframes. Keyframes you added to it by hand are replaced. The ease is written as a few keyframes on an S-curve, so it eases regardless of the interpolation Resolve uses between them. You can still move or edit them in the keyframe editor afterwards.
+
+# Workflow
+
+### Stabilize only part of a clip
+
+1. Apply the plugin on the Edit or Color page and load the project or video as usual.
+2. Open **Stabilization range**.
+3. Move the playhead to where the stabilization should start and click **Set in here**.
+4. Move the playhead to where it should end and click **Set out here**.
+5. Adjust **Ease (frames)** until the transition looks right.
+
+Only one side can be set too: an in point alone stabilizes from there to the end of the clip, an out point alone from the start up to it.
+
+For more than one stabilized section, keyframe **Stabilization amount** by hand instead.
+
+# Building
+
+The plugins build against Gyroflow core with the patches in [`core-patches/`](core-patches) applied (they add the **Stabilization amount** keyframe to the core). Fetch and patch it once before building, and again whenever the core revision changes:
+
+    just core
+
+The core revision is pinned in `core-patches/gyroflow-core.rev`; keep it in step with the `rev` of `gyroflow-core` in `common/Cargo.toml`.
+
 
 # License
 

@@ -20,6 +20,10 @@ ofx *param:
 frei0r *param:
     just -f frei0r/Justfile {{param}}
 
+# Fetches Gyroflow core and applies the patches in core-patches/ (needed before building)
+core:
+    bash core-patches/apply.sh
+
 deploy:
     just -f adobe/Justfile deploy
     just -f openfx/Justfile deploy

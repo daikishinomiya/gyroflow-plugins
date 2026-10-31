@@ -276,6 +276,7 @@ pub fn define_param(params: &mut ae::Parameters<Params>, x: ParameterType, _grou
         }
         ParameterType::Group { id, label, parameters, opened } => {
             if id == "InfoGroup" { return; }
+            if id == "StabilizationRangeGroup" { return; } // Needs the current frame, which the buttons don't get here
             params.add_group(Params::from_str(id).unwrap(), Params::from_str(&format!("{id}End")).unwrap(), label, !opened, |params| {
                 for x in parameters {
                     define_param(params, x, Some(id));
