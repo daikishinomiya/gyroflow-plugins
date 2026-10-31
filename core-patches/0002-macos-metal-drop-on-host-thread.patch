@@ -1,0 +1,17 @@
+diff --git a/src/core/stabilization/mod.rs b/src/core/stabilization/mod.rs
+index f48a1ec..3fdbc34 100644
+--- a/src/core/stabilization/mod.rs
++++ b/src/core/stabilization/mod.rs
+@@ -69,6 +69,12 @@ lazy_static::lazy_static! {
+ }
+ 
+ fn queue_wgpu_drop(cache: WgpuCache) {
++    // Metal has no such hang, and its devices may wrap the host's MTLCommandQueue (the OpenFX plugin in DaVinci
++    // Resolve): destroyed on the drop worker, they free the host's command buffers off its own thread, at any time, and
++    // crash it in -[AGX...CommandBuffer dealloc]. Destroy them on the thread they were cached on, which is the host's
++    #[cfg(any(target_os = "macos", target_os = "ios"))]
++    drop(cache);
++    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+     if let Err(err) = WGPU_DROP_QUEUE.send(cache) {
+         // Never fall back to destroying Vulkan objects on the calling thread.
+         std::mem::forget(err.0);

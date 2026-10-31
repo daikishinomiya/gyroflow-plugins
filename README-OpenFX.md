@@ -107,7 +107,7 @@ For more than one stabilized section, keyframe **Stabilization amount** by hand 
 
 # Building
 
-The plugins build against Gyroflow core with the patches in [`core-patches/`](core-patches) applied (they add the **Stabilization amount** keyframe to the core). Fetch and patch it once before building, and again whenever the core revision changes:
+The plugins build against Gyroflow core with the patches in [`core-patches/`](core-patches) applied (they add the **Stabilization amount** keyframe, and on macOS destroy the shared GPU setups on the host's thread, which keeps Resolve from crashing). Fetch and patch it once before building, and again whenever the core revision changes:
 
     just core
 

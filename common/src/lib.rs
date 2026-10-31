@@ -958,11 +958,10 @@ impl GyroflowPluginBaseInstance {
     /// Sets up the renderer of a new stabilization, loaded or forked
     fn setup_renderer(params: &dyn GyroflowPluginParams, stab: &StabilizationManager) {
         let mut stab = stab.stabilization.write();
-        // On macOS the wgpu devices wrap the host's own MTLCommandQueue. Shared instances live in a thread-local
-        // cache that gyroflow-core destroys on a separate thread (a workaround for a Vulkan hang), which frees the
-        // host's Metal command buffers off its render thread and crashes Resolve in -[AGX...CommandBuffer dealloc].
-        // Keeping the instance on the stabilization means it is destroyed on the host's thread instead.
-        stab.share_wgpu_instances = !cfg!(any(target_os = "macos", target_os = "ios"));
+        // Clips of the same format share the GPU setup (the thread-local cache in gyroflow-core). On macOS its devices
+        // wrap the host's own MTLCommandQueue, so the core patch in core-patches/ destroys them on the host's thread
+        // rather than on the core's drop worker, which crashed Resolve in -[AGX...CommandBuffer dealloc]
+        stab.share_wgpu_instances = true;
         stab.interpolation = Self::interpolation(params);
         log::info!("Interpolation: {:?}", stab.interpolation);
     }
