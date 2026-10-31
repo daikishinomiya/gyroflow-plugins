@@ -5,6 +5,9 @@ on:
     branches: [ 'fix/**' ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-latest
@@ -42,3 +45,11 @@ jobs:
         with:
           name: Gyroflow-OpenFX-macos-metalfix
           path: target/Gyroflow-OpenFX-macos-metalfix.zip
+      - name: Publish as pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: metalfix-${{ github.run_number }}
+          name: macOS Metal crash fix (test build ${{ github.run_number }})
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          files: target/Gyroflow-OpenFX-macos-metalfix.zip
