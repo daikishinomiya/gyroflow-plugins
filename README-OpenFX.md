@@ -56,7 +56,7 @@ These controls sit alongside the ones described on the [DaVinci Resolve (OpenFX)
 
 #### Stabilization amount
 
-How much of the stabilization is applied. **100%** is fully stabilized, **0%** is the camera's own motion, and values in between blend the two. Keyframe it in the Inspector to stabilize only part of a clip, or let **Stabilization range** set the keyframes for you.
+How much of the stabilization is applied. **100%** is fully stabilized, **0%** is the clip as the camera recorded it (including in-camera stabilization such as Sony IBIS, which Gyroflow otherwise undoes), and values in between blend the two. Keyframe it in the Inspector to stabilize only part of a clip, or let **Stabilization range** set the keyframes for you.
 
 The zoom follows the amount, so it eases in and out with it instead of jumping. Lens correction is not affected: keyframe **Lens correction** as well if the unstabilized parts should keep the lens's original distortion.
 

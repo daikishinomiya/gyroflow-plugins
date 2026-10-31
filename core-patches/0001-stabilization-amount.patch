@@ -48,3 +48,77 @@ index 35e4770..5209497 100644
              _ => { }
          }
      }
+diff --git a/src/core/stabilization/frame_transform.rs b/src/core/stabilization/frame_transform.rs
+index d15d732..eff6a25 100644
+--- a/src/core/stabilization/frame_transform.rs
++++ b/src/core/stabilization/frame_transform.rs
+@@ -323,6 +323,14 @@ impl FrameTransform {
+         let quat1 = gyro.org_quat_at_timestamp(timestamp_ms).inverse();
+         let smoothed_quat1 = gyro.smoothed_quat_at_timestamp(timestamp_ms);
+ 
++        // Stabilization amount (see `GyroSource::recompute_smoothness`): below 1 the in-frame corrections fade out with it
++        // too - the rolling shutter correction and the undoing of the camera's own stabilization (IBIS/OIS) - so at 0
++        // the frame is the camera's picture, stabilized in camera if it was, rather than its raw motion
++        let stab_amount = params.keyframes.value_at_video_timestamp(&crate::KeyframeType::StabilizationAmount, timestamp_ms).unwrap_or(1.0).clamp(0.0, 1.0);
++        let fade = |q: nalgebra::UnitQuaternion<f64>| -> nalgebra::UnitQuaternion<f64> {
++            if stab_amount >= 1.0 { q } else { nalgebra::UnitQuaternion::identity().try_slerp(&q, stab_amount, 1e-9).unwrap_or(q) }
++        };
++
+         // Only compute 1 matrix if not using rolling shutter correction
+         let rows = if frame_readout_time.abs() > 0.0 { if params.frame_readout_direction.is_horizontal() { params.width } else { params.height } } else { 1 };
+ 
+@@ -342,8 +350,7 @@ impl FrameTransform {
+                 start_ts
+             };
+             let quat = smoothed_quat1
+-                     * quat1
+-                     * gyro.org_quat_at_timestamp(quat_time);
++                     * fade(quat1 * gyro.org_quat_at_timestamp(quat_time));
+ 
+ 
+             let mut r = image_rotation * *quat.to_rotation_matrix().matrix();
+@@ -368,7 +375,8 @@ impl FrameTransform {
+                 let oy = o.y * is_scale.1;
+ 
+                 // if y == 0 { log::debug!("IBIS data at frame: {frame}, ts: {ts}, sx: {sx:.3}, sy: {sy:.3}, ra: {ra:.3}, ox: {ox:.3}, oy: {oy:.3}"); }
+-                (sx as f32, sy as f32, ra.to_radians() as f32, ox as f32, oy as f32)
++                let a = stab_amount;
++                ((sx * a) as f32, (sy * a) as f32, (ra * a).to_radians() as f32, (ox * a) as f32, (oy * a) as f32)
+             } else {
+                 (0.0, 0.0, 0.0, 0.0, 0.0)
+             };
+@@ -484,6 +492,14 @@ impl FrameTransform {
+         let quat1 = gyro.org_quat_at_timestamp(timestamp_ms).inverse();
+         let smoothed_quat1 = gyro.smoothed_quat_at_timestamp(timestamp_ms);
+ 
++        // Stabilization amount (see `GyroSource::recompute_smoothness`): below 1 the in-frame corrections fade out with it
++        // too - the rolling shutter correction and the undoing of the camera's own stabilization (IBIS/OIS) - so at 0
++        // the frame is the camera's picture, stabilized in camera if it was, rather than its raw motion
++        let stab_amount = params.keyframes.value_at_video_timestamp(&crate::KeyframeType::StabilizationAmount, timestamp_ms).unwrap_or(1.0).clamp(0.0, 1.0);
++        let fade = |q: nalgebra::UnitQuaternion<f64>| -> nalgebra::UnitQuaternion<f64> {
++            if stab_amount >= 1.0 { q } else { nalgebra::UnitQuaternion::identity().try_slerp(&q, stab_amount, 1e-9).unwrap_or(q) }
++        };
++
+         // Only compute 1 matrix if not using rolling shutter correction; it stands for the whole frame, so the
+         // per-row data (sensor and lens shift, lens breathing) is looked up at the centre row, like `at_timestamp` does
+         let centre = [(params.width as f32 / 2.0, params.height as f32 / 2.0)];
+@@ -503,8 +519,7 @@ impl FrameTransform {
+                 start_ts
+             };
+             let quat = smoothed_quat1
+-                     * quat1
+-                     * gyro.org_quat_at_timestamp(quat_time);
++                     * fade(quat1 * gyro.org_quat_at_timestamp(quat_time));
+ 
+             let mut r = image_rotation * *quat.to_rotation_matrix().matrix();
+             r[(0, 1)] *= -1.0; r[(0, 2)] *= -1.0;
+@@ -551,7 +566,8 @@ impl FrameTransform {
+                 let ox = o.x * is_scale.0;
+                 let oy = o.y * is_scale.1;
+ 
+-                (sx as f32, sy as f32, ra.to_radians() as f32, ox as f32, oy as f32)
++                let a = stab_amount;
++                ((sx * a) as f32, (sy * a) as f32, (ra * a).to_radians() as f32, (ox * a) as f32, (oy * a) as f32)
+             }).collect())
+         } else {
+             None
